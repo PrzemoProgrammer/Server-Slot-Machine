@@ -222,7 +222,8 @@ module.exports = class GameManager {
     for (let i = 0; i < drawnSymbolsIndexes.length - 1; i++) {
       if (
         drawnSymbolsIndexes[0] === drawnSymbolsIndexes[i + 1] ||
-        drawnSymbolsIndexes[i + 1] === symbolTypes["bell"].index
+        (drawnSymbolsIndexes[i + 1] === symbolTypes["bell"].index &&
+          drawnSymbolsIndexes[0] != symbolTypes["strawberry"].index)
       ) {
         consecutiveCount++;
         fitElementsIndexes.push(true);
