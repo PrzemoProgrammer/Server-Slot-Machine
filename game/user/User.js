@@ -1,6 +1,8 @@
+const { BALANCE } = require("../config/config");
+
 module.exports = class User {
   constructor() {
-    this.data = { credits: 10000000 };
+    this.data = { credits: BALANCE };
   }
 
   get credits() {

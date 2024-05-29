@@ -4,11 +4,14 @@ const {
   COLUMNS,
   SYMBOL_TEXTURE_COUNT,
   REEL_POSITIONS,
+  BET_STEPS,
+  SYMBOLS_MULTIPLIER,
 } = require("../config/config");
 const UsersStorage = require("../usersStorage/UsersStorage");
 const User = require("../user/User");
 const MathUtils = require("../../game/utility/math/MathUtils");
 const horizontalMatchCombinations = require("../horizontalMatches");
+const symbolTypes = require("../symbolTypes");
 const JWT = require("../../JWT/JWTManager");
 
 module.exports = class GameManager {
@@ -21,21 +24,27 @@ module.exports = class GameManager {
       // const userDatabaseData = await databaseManager.findUser({
       //   passwordHash: hashedPassword,
       // });
+
       const user = this.getUser(socketID);
       const { credits } = user.data;
+      const playerBetValue = parseFloat(bet);
 
-      if (this.checkIfThePlayerHasEnoughMoney(credits, bet)) {
+      if (this.checkIfThePlayerHasEnoughMoney(credits, playerBetValue)) {
         spinActionResultData.success = false;
       } else {
         const symbolTextureIndexes = this.getRandomSymbolsTextureIndexes();
-        const horizontalMatches =
-          this.checkHorizontalMatches(symbolTextureIndexes);
+        const { horizontalMatches, symbolsIndexes } =
+          this.checkHorizontalPayLines(symbolTextureIndexes);
         const verticalMatches = this.checkVerticalMatches(symbolTextureIndexes);
-        const totalCreditsWin = this.calculateTotalCreditsWin(
+
+        const matchLineCredits = this.calculatePayLineCredits(
+          symbolsIndexes,
           horizontalMatches.symbolIndexes,
-          bet
+          playerBetValue
         );
-        const creditsBalance = credits - bet + totalCreditsWin;
+
+        const totalCreditsWin = this.calculateTotalCreditsWin(matchLineCredits);
+        const creditsBalance = credits - playerBetValue + totalCreditsWin;
         user.credits = creditsBalance;
         //   await databaseManager.updatePlayer({
         //     accountID: decodedToken,
@@ -48,6 +57,7 @@ module.exports = class GameManager {
           horizontalMatches,
           verticalMatches,
           totalCreditsWin,
+          matchLineCredits,
         };
       }
 
@@ -67,7 +77,7 @@ module.exports = class GameManager {
       for (let j = 0; j < ROWS - 1; j++) {
         const randomSYmbolTextureIndex = MathUtils.getRandomNumberFloor(
           0,
-          SYMBOL_TEXTURE_COUNT - 1
+          i === 0 ? SYMBOL_TEXTURE_COUNT - 2 : SYMBOL_TEXTURE_COUNT - 1
         );
         symbolsTextureIndexes[i][j] = randomSYmbolTextureIndex;
       }
@@ -75,10 +85,38 @@ module.exports = class GameManager {
     return symbolsTextureIndexes;
   }
 
-  static calculateTotalCreditsWin(matches, bet) {
-    const matchesCount = matches.length;
-    const winCredits = bet * matchesCount;
-    return winCredits;
+  static calculatePayLineCredits(symbolsIndexes, payLines, playerBetValue) {
+    const credits = [];
+    if (payLines.length === 0) return credits;
+    for (let i = 0; i <= payLines.length - 1; i++) {
+      const symbolIndex = symbolsIndexes[i];
+      const payLine = payLines[i];
+      const symbolData = this.findSymbolDataByIndex(symbolIndex);
+
+      const numberOfSymbols = payLine.filter(
+        (element) => element !== false
+      ).length;
+      let winBets = null;
+
+      if (numberOfSymbols === SYMBOLS_MULTIPLIER[0]) {
+        const multiplier = symbolData.multiplier["3x"];
+        winBets = this.calculateWinnings(playerBetValue, multiplier);
+      } else if (numberOfSymbols === SYMBOLS_MULTIPLIER[1]) {
+        const multiplier = symbolData.multiplier["4x"];
+        winBets = this.calculateWinnings(playerBetValue, multiplier);
+      } else if (numberOfSymbols === SYMBOLS_MULTIPLIER[2]) {
+        const multiplier = symbolData.multiplier["5x"];
+        winBets = this.calculateWinnings(playerBetValue, multiplier);
+      }
+
+      credits.push(winBets);
+    }
+
+    return credits;
+  }
+
+  static calculateTotalCreditsWin(matchLineCredits) {
+    return matchLineCredits.reduce((sum, current) => sum + current, 0);
   }
 
   static calculateTotalWinMoney(currentMoney, bet, moneyWon) {
@@ -86,7 +124,7 @@ module.exports = class GameManager {
   }
 
   static checkIfThePlayerHasEnoughMoney(money, bet) {
-    return money - bet < 0 || money < 0 || bet < 100 || bet > money;
+    return money - bet < 0;
   }
 
   static createNewUser(socketID) {
@@ -95,7 +133,11 @@ module.exports = class GameManager {
   }
 
   static getUserState(socketID) {
-    return UsersStorage.getUser(socketID).getData();
+    const playerCredits = UsersStorage.getUser(socketID).getData().credits;
+    return {
+      credits: playerCredits,
+      betSteps: BET_STEPS,
+    };
   }
 
   static getUser(socketID) {
@@ -106,35 +148,127 @@ module.exports = class GameManager {
     UsersStorage.deleteUser(socketID);
   }
 
-  static checkHorizontalMatches(textureIndexes) {
-    const matches = {
+  static checkHorizontalPayLines(textureIndexes) {
+    const horizontalMatches = {
       symbolIndexes: [],
       lineIndexes: [],
     };
+    const symbolsIndexes = [];
+    const payLines = [];
     for (const combination of horizontalMatchCombinations) {
-      const array = combination.symbolsCoordinates.map(
+      const drawnSymbolsIndexes = combination.symbolsCoordinates.map(
         ([row, column]) => textureIndexes[row][column]
       );
 
-      const allAreEqual = array.every((num) => num === array[0]);
-      if (
-        allAreEqual ||
-        array.includes(7) ||
-        array.includes(10) ||
-        array.includes(9)
-      ) {
-        const filteredArray = array.filter(
-          (num) => num !== 7 && num !== 10 && num !== 9
+      const [isPayLine, fitElementsIndexes, symbolIndex] =
+        this.handlePayLine(drawnSymbolsIndexes);
+
+      if (isPayLine) {
+        const combinationSymbolsIndex = combination.symbolsIndex.map(
+          (value, index) => {
+            return fitElementsIndexes[index] ? value : false;
+          }
         );
-        const isEqual = filteredArray.every((num) => num === filteredArray[0]);
-        if (allAreEqual || isEqual) {
-          matches.symbolIndexes.push(combination.symbolsIndex);
-          matches.lineIndexes.push(combination.lineIndex);
-        }
+
+        console.log(fitElementsIndexes);
+        if (
+          fitElementsIndexes[0] === false ||
+          this.checkThePayPLineAlreadyExist(combinationSymbolsIndex, payLines)
+        )
+          break;
+
+        symbolsIndexes.push(symbolIndex);
+        payLines.push(combinationSymbolsIndex);
+        horizontalMatches.symbolIndexes.push(combinationSymbolsIndex);
+        horizontalMatches.lineIndexes.push(combination.lineIndex);
       }
     }
 
-    return matches;
+    return { horizontalMatches, symbolsIndexes };
+  }
+
+  static handlePayLine(drawnSymbolsIndexes) {
+    let [isPayLine, fitElementsIndexes, symbolIndex] = this.checkPayLine(
+      drawnSymbolsIndexes,
+      5
+    );
+    if (isPayLine) {
+      return [isPayLine, fitElementsIndexes, symbolIndex];
+    }
+
+    [isPayLine, fitElementsIndexes, symbolIndex] = this.checkPayLine(
+      drawnSymbolsIndexes,
+      4
+    );
+    if (isPayLine) {
+      return [isPayLine, fitElementsIndexes, symbolIndex];
+    }
+
+    [isPayLine, fitElementsIndexes, symbolIndex] = this.checkPayLine(
+      drawnSymbolsIndexes,
+      3
+    );
+    if (isPayLine) {
+      return [isPayLine, fitElementsIndexes, symbolIndex];
+    }
+
+    return [false];
+  }
+
+  static checkPayLine(drawnSymbolsIndexes, symbolsCount) {
+    let symbolIndex = null;
+    let consecutiveCount = 1;
+    let fitElementsIndexes = [];
+    for (let i = 0; i < drawnSymbolsIndexes.length - 1; i++) {
+      if (
+        drawnSymbolsIndexes[0] === drawnSymbolsIndexes[i + 1] ||
+        drawnSymbolsIndexes[i + 1] === symbolTypes["bell"].index
+      ) {
+        consecutiveCount++;
+        fitElementsIndexes.push(true);
+        if (consecutiveCount === symbolsCount) {
+          fitElementsIndexes.push(true);
+          symbolIndex = drawnSymbolsIndexes[0];
+          return [true, fitElementsIndexes, symbolIndex];
+        }
+      } else {
+        return [false, (fitElementsIndexes = []), symbolIndex];
+      }
+    }
+  }
+
+  static checkThePayPLineAlreadyExist(actualPayLine, existingPayLines) {
+    const stringArray1 = JSON.stringify(actualPayLine);
+    for (let subArray of existingPayLines) {
+      if (JSON.stringify(subArray) === stringArray1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static findSymbolDataByIndex(index) {
+    for (const key in symbolTypes) {
+      if (symbolTypes.hasOwnProperty(key)) {
+        if (symbolTypes[key].index === index) {
+          return symbolTypes[key];
+        }
+      }
+    }
+    return null;
+  }
+
+  static calculateWinnings(playerBetValue, multiplier) {
+    let newBetValue = null;
+    if (multiplier.startsWith("*")) {
+      const multiplierValue = parseFloat(multiplier.substring(1));
+      newBetValue = playerBetValue * multiplierValue;
+    } else if (multiplier.startsWith("/")) {
+      const multiplierValue = parseFloat(multiplier.substring(1));
+      newBetValue = playerBetValue / multiplierValue;
+    }
+
+    return newBetValue;
   }
 
   static checkVerticalMatches(textureIndexes) {
